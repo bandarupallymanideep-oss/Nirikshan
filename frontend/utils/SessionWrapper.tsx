@@ -1,11 +1,11 @@
 'use client';
 
-import { SessionProvider } from 'next-auth/react';
+import { AuthProvider } from '@/contexts/auth-context';
 
 const SessionWrapper: React.FC<{ children: React.ReactNode }> = ({
 	children,
 }) => {
-	return <SessionProvider>{children}</SessionProvider>;
+	return <AuthProvider>{children}</AuthProvider>;
 };
 
 export default SessionWrapper;

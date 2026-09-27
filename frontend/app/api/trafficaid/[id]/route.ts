@@ -3,12 +3,12 @@ import { prisma } from '@/prisma';
 
 export async function GET(
 	request: Request,
-	{ params }: { params: { id: string } }
+	{ params }: { params: Promise<{ id: string }> }
 ) {
 	try {
-		const id = parseInt(params.id, 10);
-		if (isNaN(id)) {
-			return NextResponse.json({ error: 'Invalid ID format' }, { status: 400 });
+		const { id } = await params;
+		if (!id) {
+			return NextResponse.json({ error: 'Invalid ID' }, { status: 400 });
 		}
 
 		const post = await prisma.trafficAidPost.findUnique({
@@ -21,7 +21,6 @@ export async function GET(
 
 		return NextResponse.json({
 			...post,
-			id: post.id.toString(),
 			createdAt: post.createdAt.toISOString(),
 			updatedAt: post.updatedAt.toISOString(),
 		});
@@ -36,12 +35,12 @@ export async function GET(
 
 export async function PATCH(
 	request: NextRequest,
-	{ params }: { params: { id: string } }
+	{ params }: { params: Promise<{ id: string }> }
 ) {
 	try {
-		const id = parseInt(params.id, 10);
-		if (isNaN(id)) {
-			return NextResponse.json({ error: 'Invalid ID format' }, { status: 400 });
+		const { id } = await params;
+		if (!id) {
+			return NextResponse.json({ error: 'Invalid ID' }, { status: 400 });
 		}
 
 		const data = await request.json();
@@ -92,7 +91,6 @@ export async function PATCH(
 
 		return NextResponse.json({
 			...post,
-			id: post.id.toString(),
 			createdAt: post.createdAt.toISOString(),
 			updatedAt: post.updatedAt.toISOString(),
 		});
@@ -107,12 +105,12 @@ export async function PATCH(
 
 export async function DELETE(
 	request: Request,
-	{ params }: { params: { id: string } }
+	{ params }: { params: Promise<{ id: string }> }
 ) {
 	try {
-		const id = parseInt(params.id, 10);
-		if (isNaN(id)) {
-			return NextResponse.json({ error: 'Invalid ID format' }, { status: 400 });
+		const { id } = await params;
+		if (!id) {
+			return NextResponse.json({ error: 'Invalid ID' }, { status: 400 });
 		}
 
 		await prisma.trafficAidPost.delete({
@@ -128,3 +126,4 @@ export async function DELETE(
 		);
 	}
 }
+
