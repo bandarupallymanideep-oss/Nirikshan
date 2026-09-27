@@ -71,7 +71,18 @@ export function CCTVViewDetails({ open, onClose, cctv }: CCTVViewDetailsProps) {
 						</div>
 
 						<div>
-							<h3 className='text-sm font-medium text-gray-400'>RTSP URL</h3>
+							<div className='flex items-center justify-between'>
+								<h3 className='text-sm font-medium text-gray-400'>RTSP URL</h3>
+								<Button
+									size='sm'
+									variant='outline'
+									className='h-7 text-xs border-blue-600/40 text-blue-400 hover:bg-blue-950/40'
+									onClick={() => {
+										window.location.href = `/?cctvId=${cctv.id}`;
+									}}>
+									Open in Live Monitoring
+								</Button>
+							</div>
 							<p className='mt-1 break-all rounded bg-gray-800 p-2 font-mono text-sm'>
 								{cctv.rtspUrl}
 							</p>

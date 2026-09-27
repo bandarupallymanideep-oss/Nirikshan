@@ -302,7 +302,13 @@ export const createColumns = (): ColumnDef<CCTV>[] => {
 								align='end'
 								className='w-[160px] border-gray-700 bg-gray-800 text-white'>
 								<DropdownMenuLabel>Actions</DropdownMenuLabel>
-								<DropdownMenuSeparator className='bg-gray-700' />
+								<DropdownMenuItem
+									className='cursor-pointer hover:bg-gray-700'
+									onClick={() => {
+										window.location.href = `/?cctvId=${cctv.id}`;
+									}}>
+									Live Monitoring
+								</DropdownMenuItem>
 								<DropdownMenuItem
 									className='cursor-pointer hover:bg-gray-700'
 									onClick={() => setViewDetailsOpen(true)}>

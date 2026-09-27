@@ -9,8 +9,9 @@ from Nirikshan.logger import logging
 class TrainingPipeline:
     CONFIDENCE_THRESHOLD = 0.85
     ACCIDENT_CLASS_IDS = {1, 2, 3, 5, 6, 7, 8}
-    ACCIDENT_CLIPS_DIR = Path("accident_clips")
-    ACCIDENT_IMAGES_DIR = Path("accident_images")
+    BASE_DIR = Path(__file__).resolve().parent.parent.parent
+    ACCIDENT_CLIPS_DIR = BASE_DIR / "accident_clips"
+    ACCIDENT_IMAGES_DIR = BASE_DIR / "accident_images"
     ACCIDENT_CLIPS_DIR.mkdir(parents=True, exist_ok=True)
     ACCIDENT_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     PRE_ACCIDENT_BUFFER_SIZE = 50

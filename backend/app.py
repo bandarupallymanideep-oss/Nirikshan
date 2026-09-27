@@ -1,37 +1,60 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, StreamingResponse
 import cv2
 import numpy as np
 import json
 import asyncio
 import os
 import uuid
+import time
 from datetime import datetime
 from typing import Dict, Set, List, Deque, Optional
 from collections import deque
 import base64
 import traceback
-from fastapi.responses import JSONResponse
 from Nirikshan.pipeline.training_pipeline import TrainingPipeline
 from Nirikshan.logger import logging
 from pathlib import Path
 import supervision as sv
 
-app = FastAPI()
+BASE_DIR = Path(__file__).resolve().parent
+ACCIDENT_IMAGES_DIR = BASE_DIR / "accident_images"
+ACCIDENT_IMAGES_DIR.mkdir(exist_ok=True, parents=True)
+
+ACCIDENT_CLIPS_DIR = BASE_DIR / "accident_clips"
+ACCIDENT_CLIPS_DIR.mkdir(exist_ok=True, parents=True)
+
+UPLOADS_DIR = BASE_DIR / "uploads"
+UPLOADS_DIR.mkdir(exist_ok=True, parents=True)
+
+PUBLIC_IMAGES_DIR = BASE_DIR.parent / "frontend" / "public" / "accident_images"
+
+app = FastAPI(title="Nirikshan API", description="Highway CCTV Accident Detection & Monitoring")
 pipeline = TrainingPipeline()
 
-ACCIDENT_IMAGES_DIR = Path("accident_images")
-ACCIDENT_IMAGES_DIR.mkdir(exist_ok=True)
-
-PUBLIC_IMAGES_DIR = Path("../frontend/public/accident_images")
-PUBLIC_IMAGES_DIR.mkdir(exist_ok=True, parents=True)
-
 app.mount("/accident_images", StaticFiles(directory=str(ACCIDENT_IMAGES_DIR)), name="accident_images")
+app.mount("/accident_clips", StaticFiles(directory=str(ACCIDENT_CLIPS_DIR)), name="accident_clips")
+
+# Configure CORS for local development and production Vercel frontend
+allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "")
+allowed_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+]
+if allowed_origins_env:
+    for o in allowed_origins_env.split(","):
+        cleaned = o.strip()
+        if cleaned and cleaned not in allowed_origins:
+            allowed_origins.append(cleaned)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -177,10 +200,12 @@ def save_accident_image(frame, connection_id: str, frame_number: int) -> Optiona
         
         try:
             import shutil
-            shutil.copy2(str(backend_path), str(public_path))
-            logging.info(f"Copied image to public directory: {public_path}")
+            if PUBLIC_IMAGES_DIR.parent.exists():
+                PUBLIC_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(str(backend_path), str(public_path))
+                logging.info(f"Copied image to public directory: {public_path}")
         except Exception as e:
-            logging.error(f"Failed to copy to public directory: {str(e)}")
+            logging.warning(f"Note: Could not copy to public directory: {str(e)}")
 
         return f"/accident_images/{filename}"
         
@@ -212,10 +237,27 @@ async def process_video_stream(websocket: WebSocket, video_url: str, connection_
         detected_accident_type = None
         detected_confidence = None
         
-        if video_url.startswith('/'):
-            video_path = f"../frontend/public{video_url}"
+        if video_url.startswith('/accident_clips/'):
+            video_path = str(ACCIDENT_CLIPS_DIR / video_url.replace('/accident_clips/', ''))
+        elif video_url.startswith('/uploads/'):
+            frontend_upload = BASE_DIR.parent / "frontend" / "public" / video_url.lstrip('/')
+            if frontend_upload.exists():
+                video_path = str(frontend_upload)
+            else:
+                video_path = str(UPLOADS_DIR / video_url.split('/')[-1])
+        elif video_url.startswith('/'):
+            frontend_path = BASE_DIR.parent / "frontend" / "public" / video_url.lstrip('/')
+            if frontend_path.exists():
+                video_path = str(frontend_path)
+            else:
+                video_path = str(ACCIDENT_CLIPS_DIR / video_url.split('/')[-1])
         else:
-            video_path = video_url
+            # Check if it's in accident_clips
+            possible_clip = ACCIDENT_CLIPS_DIR / video_url.split('/')[-1]
+            if possible_clip.exists():
+                video_path = str(possible_clip)
+            else:
+                video_path = video_url
             
         logging.info(f"Opening video from: {video_path}")
         cap = cv2.VideoCapture(video_path)
@@ -524,18 +566,175 @@ async def detect_image(file: UploadFile = File(...)):
     nparr = np.frombuffer(contents, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     result = pipeline.process_frame(img)
-    return JSONResponse(content={"result": result})
+    return JSONResponse(content={
+        "status": "success",
+        "result": result,
+        "accident_detected": (result == "Accident detected")
+    })
 
 @app.post("/detect/video")
 async def detect_video(file: UploadFile = File(...)):
     contents = await file.read()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    video_path = os.path.join("uploads", f"videoUpload_{timestamp}.mp4")
-    os.makedirs("uploads", exist_ok=True)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    video_path = UPLOADS_DIR / f"videoUpload_{timestamp}_{file.filename}"
     
     with open(video_path, "wb") as f:
         f.write(contents)
     
     pipeline.reset_state()
-    result = pipeline.process_video(video_path)
-    return JSONResponse(content={"result": result})
+    result = pipeline.process_video(str(video_path))
+    accident_detected = (result == "Accident detected")
+    return JSONResponse(content={
+        "status": "success",
+        "result": result,
+        "accident_detected": accident_detected,
+        "filename": file.filename,
+        "message": f"Video analysis complete: {result}"
+    })
+
+# =========================================================================
+# RTSP LIVE VIDEO STREAMING & CONNECTION VERIFICATION
+# =========================================================================
+
+def generate_mjpeg_stream(rtsp_url: str):
+    """
+    Generate a continuous MJPEG multipart stream from an RTSP camera URL
+    or local video clip. This enables standard browser playback via <img> tag.
+    """
+    video_source = rtsp_url
+    if not rtsp_url.startswith("rtsp://") and not rtsp_url.startswith("http://"):
+        possible_clip = ACCIDENT_CLIPS_DIR / rtsp_url.split("/")[-1]
+        if possible_clip.exists():
+            video_source = str(possible_clip)
+
+    cap = cv2.VideoCapture(video_source)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    if not cap.isOpened():
+        logging.error(f"Cannot open video source for streaming: {video_source}")
+        return
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                # If reading a file, loop back to the beginning so it streams continuously
+                if not rtsp_url.startswith("rtsp://"):
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                else:
+                    break
+
+            h, w = frame.shape[:2]
+            if w > 1280:
+                frame = cv2.resize(frame, (1280, int(h * 1280 / w)))
+
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            if not ret:
+                continue
+
+            frame_bytes = buffer.tobytes()
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            time.sleep(0.04)  # ~25 fps cap to prevent saturation
+    except Exception as e:
+        logging.error(f"Error in MJPEG stream: {str(e)}")
+    finally:
+        cap.release()
+
+@app.get("/api/cctv/stream")
+async def stream_cctv(rtsp_url: str):
+    """
+    Stream live CCTV footage as browser-compatible MJPEG multipart stream.
+    Usable in browser directly via: <img src="/api/cctv/stream?rtsp_url=..." />
+    """
+    if not rtsp_url:
+        raise HTTPException(status_code=400, detail="rtsp_url query parameter is required")
+    return StreamingResponse(
+        generate_mjpeg_stream(rtsp_url),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
+@app.get("/api/cctv/test-connection")
+async def test_cctv_connection(rtsp_url: str):
+    """
+    Test RTSP camera connectivity and return stream health / metadata.
+    Used by CCTV Settings to verify camera connections before or after saving.
+    """
+    if not rtsp_url:
+        return JSONResponse(status_code=400, content={"success": False, "message": "rtsp_url parameter required"})
+    
+    video_source = rtsp_url
+    if not rtsp_url.startswith("rtsp://") and not rtsp_url.startswith("http://"):
+        possible_clip = ACCIDENT_CLIPS_DIR / rtsp_url.split("/")[-1]
+        if possible_clip.exists():
+            video_source = str(possible_clip)
+
+    cap = cv2.VideoCapture(video_source)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+    if not cap.isOpened():
+        return JSONResponse(content={
+            "success": False,
+            "status": "offline",
+            "message": "Unable to connect to camera or RTSP stream"
+        })
+
+    ret, frame = cap.read()
+    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+    cap.release()
+
+    if not ret or frame is None:
+        return JSONResponse(content={
+            "success": False,
+            "status": "offline",
+            "message": "Connected but failed to receive video frames from stream"
+        })
+
+    h, w = frame.shape[:2]
+    return JSONResponse(content={
+        "success": True,
+        "status": "online",
+        "message": "Camera stream connected successfully",
+        "resolution": f"{w}x{h}",
+        "fps": round(fps, 1)
+    })
+
+# =========================================================================
+# SAMPLE ACCIDENT CLIPS FOR TESTING & ANALYZE
+# =========================================================================
+
+@app.get("/api/accident-clips")
+async def list_accident_clips():
+    """List available sample accident clips in backend/accident_clips"""
+    clips = []
+    if ACCIDENT_CLIPS_DIR.exists():
+        for file in sorted(ACCIDENT_CLIPS_DIR.glob("*.mp4")):
+            clips.append({
+                "filename": file.name,
+                "size_bytes": file.stat().st_size,
+                "size_mb": round(file.stat().st_size / (1024 * 1024), 2),
+                "url": f"/accident_clips/{file.name}"
+            })
+    return {"clips": clips, "count": len(clips)}
+
+@app.post("/api/detect/sample-clip")
+async def detect_sample_clip(filename: str = Form(...)):
+    """Run accident detection directly on a sample clip from backend/accident_clips"""
+    clip_path = ACCIDENT_CLIPS_DIR / filename
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail=f"Clip not found: {filename}")
+    
+    pipeline.reset_state()
+    result = pipeline.process_video(str(clip_path))
+    accident_detected = (result == "Accident detected")
+    return JSONResponse(content={
+        "status": "success",
+        "result": result,
+        "accident_detected": accident_detected,
+        "filename": filename,
+        "message": f"Analysis complete: {result}"
+    })

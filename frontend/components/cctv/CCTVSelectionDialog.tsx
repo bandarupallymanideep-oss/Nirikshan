@@ -102,7 +102,7 @@ export function CCTVSelectionDialog({
 									<TableCell
 										colSpan={4}
 										className='h-32 text-center text-gray-500'>
-										No cameras found with accident footage
+										No CCTV cameras found. Add a camera in CCTV Settings.
 									</TableCell>
 								</TableRow>
 							) : (
